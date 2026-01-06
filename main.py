@@ -5,10 +5,23 @@ from kivy.uix.button import Button
 from kivy.uix.label import Label
 import random
 from wordle_logic import evaluate_guess
+from pathlib import Path
 
-def get_random_word(path="words.txt"):
-    with open(path) as f:
-        words = [w.strip().lower() for w in f if len(w.strip()) == 5]
+
+def get_random_word(filename="words.txt"):
+    base_dir = Path(__file__).parent
+    words_path = base_dir / filename
+
+    with words_path.open() as f:
+        words = [
+            w.strip().upper()
+            for w in f
+            if len(w.strip()) == 5 and w.strip().isalpha()
+        ]
+
+    if not words:
+        raise ValueError("No valid 5-letter words found in words.txt")
+
     return random.choice(words)
 
 
@@ -55,8 +68,20 @@ class GuessRow(GridLayout):
                 Rectangle(pos=lbl.pos, size=lbl.size)
 
     def clear(self):
+        from kivy.graphics import Color, Rectangle
+
         for lbl in self.labels:
             lbl.text = ""
+            lbl.canvas.before.clear()
+            with lbl.canvas.before:
+                Color(0.83, 0.83, 0.83, 1)
+                rect = Rectangle(pos=lbl.pos, size=lbl.size)
+
+            # Keep rectangle aligned with label
+            lbl.bind(
+                pos=lambda instance, value, r=rect: setattr(r, 'pos', value),
+                size=lambda instance, value, r=rect: setattr(r, 'size', value)
+            )
 
 
 class Keyboard(BoxLayout):
@@ -98,37 +123,68 @@ class WordleGame(App):
     def build(self):
         self.word_length = 5
         self.max_attempts = 6
-        self.attempt = 0
-        self.solution = secret_word
-        print(f'Solution: {self.solution}')
-        self.current_guess = []
 
-        main = BoxLayout(orientation='vertical', padding=10, spacing=10)
+        self.main = BoxLayout(orientation='vertical', padding=10, spacing=10)
+
+        # Status label
+        self.status_label = Label(
+            text="",
+            font_size=24,
+            size_hint_y=None,
+            height=40
+        )
+        self.main.add_widget(self.status_label)
 
         # Guess grid
         self.grid_layouts = []
         for _ in range(self.max_attempts):
             row = GuessRow(word_length=self.word_length)
-            main.add_widget(row)
+            self.main.add_widget(row)
             self.grid_layouts.append(row)
 
-        # Keyboard with 3 rows stacked vertically
+        # Keyboard
         self.keyboard = Keyboard()
         self.keyboard.on_letter_click = self.add_letter
-        main.add_widget(self.keyboard)
+        self.main.add_widget(self.keyboard)
 
-        # Submit button
-        submit_btn = Button(
-            text='Submit Guess',
-            size_hint=(None, None),
-            size=(170, 70)
-        )
+        # Buttons row
+        btn_row = BoxLayout(size_hint_y=None, height=70, spacing=10)
+
+        submit_btn = Button(text="Submit Guess")
         submit_btn.bind(on_press=self.submit_guess)
-        main.add_widget(submit_btn)
 
-        return main
+        new_game_btn = Button(text="New Game")
+        new_game_btn.bind(on_press=self.reset_game)
+
+        btn_row.add_widget(submit_btn)
+        btn_row.add_widget(new_game_btn)
+
+        self.main.add_widget(btn_row)
+
+        self.reset_game()
+        return self.main
+
+    def reset_game(self, *args):
+        self.solution = get_random_word().upper()
+        print(f"New solution: {self.solution}")
+
+        self.attempt = 0
+        self.current_guess = []
+        self.game_over = False
+        self.status_label.text = ""
+
+        for row in self.grid_layouts:
+            row.clear()
+
+        # Re-enable keyboard
+        for btn in self.keyboard.buttons.values():
+            btn.disabled = False
+            btn.background_color = (1, 1, 1, 1)
 
     def add_letter(self, letter):
+        if self.game_over:
+            return
+
         if len(self.current_guess) < self.word_length:
             self.current_guess.append(letter)
             self.update_display()
@@ -143,22 +199,35 @@ class WordleGame(App):
                 row.labels[i].text = ""
 
     def submit_guess(self, *args):
+        if self.game_over:
+            return
+
         if len(self.current_guess) != self.word_length:
             return  # incomplete guess
+
         guess = "".join(self.current_guess).upper()
         row = self.grid_layouts[self.attempt]
         row.update_guess(guess, self.solution)
-        # disable letters used
+
+        # Disable incorrect letters
         for letter in guess:
             if letter not in self.solution:
                 self.keyboard.disable_letter(letter)
+
         self.attempt += 1
         self.current_guess = []
 
+        # Win condition
         if guess == self.solution:
-            print("Congratulations! Correct Guess.")
-        elif self.attempt >= self.max_attempts:
-            print(f"Game Over! The word was {self.solution}.")
+            self.status_label.text = "🎉 You Win!"
+            self.game_over = True
+            return
+
+        # Lose condition
+        if self.attempt >= self.max_attempts:
+            self.status_label.text = f"❌ Game Over! Word was {self.solution}"
+            self.game_over = True
+            return
 
 
 if __name__ == '__main__':
